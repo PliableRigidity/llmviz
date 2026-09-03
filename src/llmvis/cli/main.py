@@ -8,13 +8,21 @@ import sys
 import click
 import httpx
 
+# Ensure UTF-8 output on Windows terminals that default to cp1252.
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass
+
 DEFAULT_HOST = "http://localhost:11434"
 
 
 @click.group()
 @click.version_option(package_name="llmvis")
 def cli() -> None:
-    """LLMVis — live visualizer and educational debugger for local LLM inference.
+    """LLMVis -- live visualizer and educational debugger for local LLM inference.
 
     Run in a second terminal while 'ollama run <model>' runs in the first.
     """
@@ -91,6 +99,138 @@ def status(host: str) -> None:
             sys.exit(1)
 
     asyncio.run(_check())
+
+
+@cli.command()
+@click.argument("model_id")
+@click.option(
+    "--telemetry",
+    default="standard",
+    type=click.Choice(["light", "standard", "deep"], case_sensitive=False),
+    show_default=True,
+    help="Instrumentation depth: light (timing+logits), standard (+layer stats), deep (+MLP+attention).",
+)
+@click.option(
+    "--attention",
+    is_flag=True,
+    default=False,
+    help="Enable attention weight statistics (deep mode only; may increase VRAM and reduce speed).",
+)
+@click.option("--device", default="auto", show_default=True, help="Inference device: cuda, cpu, mps, or auto.")
+@click.option("--max-new-tokens", default=512, type=int, show_default=True, help="Max tokens per prompt.")
+@click.option("--temperature", default=0.7, type=float, show_default=True)
+@click.option("--top-k", default=50, type=int, show_default=True)
+@click.option("--top-p", default=0.9, type=float, show_default=True)
+@click.option(
+    "--backend",
+    default="auto",
+    type=click.Choice(["auto", "transformers", "mlx"], case_sensitive=False),
+    show_default=True,
+    help=(
+        "Inference backend. 'auto' selects the best available backend for the platform. "
+        "'transformers' forces PyTorch/HuggingFace. "
+        "'mlx' forces Apple MLX (requires Apple Silicon + mlx-lm installed)."
+    ),
+)
+@click.option(
+    "--log-level",
+    default="WARNING",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
+    show_default=True,
+)
+def instrument(
+    model_id: str,
+    telemetry: str,
+    attention: bool,
+    device: str,
+    max_new_tokens: int,
+    temperature: float,
+    top_k: int,
+    top_p: float,
+    backend: str,
+    log_level: str,
+) -> None:
+    """Start deep instrumentation mode with a local model.
+
+    \b
+    MODEL_ID is a HuggingFace Hub model ID or local path.
+    Examples:
+        llmvis instrument Qwen/Qwen2.5-1.5B-Instruct
+        llmvis instrument Qwen/Qwen2.5-1.5B-Instruct --telemetry deep
+        llmvis instrument Qwen/Qwen2.5-1.5B-Instruct --attention
+        llmvis instrument mlx-community/Qwen2.5-1.5B-Instruct-4bit --backend mlx
+        llmvis instrument /path/to/local/model
+
+    \b
+    Download a model first with:
+        huggingface-cli download Qwen/Qwen2.5-1.5B-Instruct
+
+    \b
+    Modes available in a separate terminal window:
+        Mode 1 (Ollama observer):   llmvis run
+        Mode 2 (deep instrument):   llmvis instrument <model_id>
+
+    \b
+    Backend selection:
+        auto         — best available for current platform
+        transformers — PyTorch/HuggingFace (Linux/Windows/macOS)
+        mlx          — Apple MLX/Metal (Apple Silicon only)
+    """
+    import logging
+    logging.basicConfig(level=getattr(logging, log_level.upper()))
+
+    from llmvis.platform.detect import detect_platform
+    from llmvis.tui.app_deep import LLMVisDeepApp
+
+    platform_info = detect_platform()
+
+    # Resolve 'auto' backend
+    chosen_backend = backend.lower()
+    if chosen_backend == "auto":
+        if platform_info.is_apple_silicon and platform_info.mlx_available:
+            chosen_backend = "mlx"
+        else:
+            chosen_backend = "transformers"
+
+    click.echo("LLMVis deep instrumentation")
+    click.echo(f"  Model:     {model_id}")
+    click.echo(f"  Backend:   {chosen_backend}")
+    click.echo(f"  Telemetry: {telemetry}")
+    if chosen_backend == "transformers":
+        click.echo(f"  Device:    {device}")
+    if attention and chosen_backend == "transformers":
+        click.echo("  Attention: enabled (--attention flag; may reduce throughput)")
+    click.echo("")
+
+    if chosen_backend == "mlx":
+        from llmvis.adapters.mlx_adapter import MLXAdapter
+        try:
+            adapter = MLXAdapter(
+                model_id=model_id,
+                telemetry_mode=telemetry,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+            )
+        except RuntimeError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1) from exc
+    else:
+        from llmvis.adapters.instrumented_transformers import InstrumentedTransformersAdapter
+        adapter = InstrumentedTransformersAdapter(
+            model_id=model_id,
+            device=device,
+            telemetry_mode=telemetry,
+            attention_enabled=attention,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+        )
+
+    app = LLMVisDeepApp(adapter=adapter, model_id=model_id, telemetry_mode=telemetry)
+    app.run()
 
 
 @cli.command()

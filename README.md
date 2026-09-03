@@ -30,6 +30,12 @@ With NVIDIA GPU telemetry (recommended if you have an NVIDIA GPU):
 pip install -e ".[nvidia]"
 ```
 
+On Apple Silicon (M1/M2/M3/M4), for MLX-based deep instrumentation:
+
+```bash
+pip install -e ".[mlx]"
+```
+
 For development:
 
 ```bash
@@ -37,6 +43,42 @@ pip install -e ".[dev,nvidia]"
 ```
 
 **Requirements:** Python 3.10+, Ollama running locally.
+
+---
+
+## Platform support
+
+| Platform | Observer | Hardware telemetry | Deep instrumentation |
+|---|---|---|---|
+| Linux + NVIDIA | Yes | CPU / RAM / GPU / VRAM | PyTorch / CUDA |
+| Apple Silicon (M1–M4) | Yes | CPU / Unified Memory | MLX / Metal |
+| CPU-only Linux | Yes | CPU / RAM | PyTorch / CPU |
+| Windows + NVIDIA | Yes | CPU / RAM / GPU / VRAM | PyTorch / CUDA |
+
+**Apple Silicon** uses unified memory — LLMVis shows a single memory pool
+rather than separate RAM/VRAM figures. There is no VRAM panel on Apple Silicon
+because there is no physically separate GPU memory pool.
+
+### Inference backends
+
+```
+LLMVis
+   │
+   ├── OllamaObserverAdapter    (all platforms, stock Ollama)
+   │
+   ├── TransformersAdapter      (Linux / Windows / macOS)
+   │      ├── CUDA              (NVIDIA)
+   │      ├── MPS               (Apple Silicon, via PyTorch)
+   │      └── CPU               (fallback)
+   │
+   └── MLXAdapter               (Apple Silicon only)
+          └── Metal             (mlx-lm required)
+```
+
+Each backend exposes normalized `LLMVisEvent` objects — the TUI does not
+need to know which runtime is in use. Backend capabilities (layer stats,
+VRAM, unified memory, etc.) are declared via `BackendCapabilities` and
+the TUI renders panels accordingly.
 
 ---
 

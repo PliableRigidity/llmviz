@@ -1,8 +1,9 @@
-"""Tests for system and GPU telemetry."""
+"""Tests for system and GPU telemetry (V1 + V2 providers)."""
 
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from llmvis.telemetry.system import SystemTelemetry, _find_ollama_proc
@@ -91,3 +92,87 @@ async def test_gpu_stats_with_mock_pynvml():
             sys.modules.pop("pynvml", None)
         else:
             sys.modules["pynvml"] = old_pynvml
+
+
+# ── V2 provider tests (platform-aware providers) ──────────────────────────────
+
+
+def _mock_vmem(used=8_000_000_000, total=16_000_000_000):
+    return SimpleNamespace(used=used, total=total, percent=50.0)
+
+
+def _make_platform(is_apple=False, cuda=False, cuda_name=""):
+    from llmvis.platform.detect import PlatformInfo
+    return PlatformInfo(
+        os="darwin" if is_apple else "linux",
+        arch="arm64" if is_apple else "x86_64",
+        is_apple_silicon=is_apple,
+        chip_model="Apple M3 Pro" if is_apple else "unknown",
+        cuda_available=cuda,
+        cuda_device_name=cuda_name,
+        mlx_available=is_apple,
+        mps_available=is_apple,
+    )
+
+
+def test_system_provider_gpu_percent_none():
+    from llmvis.telemetry.providers.system import SystemTelemetryProvider
+    provider = SystemTelemetryProvider()
+    with (
+        patch("psutil.virtual_memory", return_value=_mock_vmem()),
+        patch("psutil.cpu_percent", return_value=10.0),
+    ):
+        snap = provider.snapshot()
+    assert snap.gpu_percent is None
+    assert snap.memory_architecture == "CPU-only"
+
+
+def test_apple_provider_no_vram():
+    from llmvis.telemetry.providers.apple import AppleTelemetryProvider
+    provider = AppleTelemetryProvider(chip_name="Apple M3 Pro")
+    with (
+        patch("psutil.virtual_memory", return_value=_mock_vmem()),
+        patch("psutil.cpu_percent", return_value=40.0),
+        patch("llmvis.telemetry.providers.apple._mlx_active_bytes", return_value=None),
+    ):
+        snap = provider.snapshot()
+    assert snap.gpu_mem_used_bytes is None
+    assert snap.gpu_mem_total_bytes is None
+    assert snap.unified_mem_used_bytes is not None
+    assert snap.memory_architecture == "Unified Memory"
+
+
+def test_apple_provider_mlx_bytes_populated():
+    from llmvis.telemetry.providers.apple import AppleTelemetryProvider
+    provider = AppleTelemetryProvider(chip_name="Apple M2")
+    with (
+        patch("psutil.virtual_memory", return_value=_mock_vmem()),
+        patch("psutil.cpu_percent", return_value=5.0),
+        patch("llmvis.telemetry.providers.apple._mlx_active_bytes", return_value=999_000),
+    ):
+        snap = provider.snapshot()
+    assert snap.mlx_active_bytes == 999_000
+
+
+def test_factory_apple_returns_apple_provider():
+    from llmvis.telemetry.providers.factory import get_telemetry_provider
+    from llmvis.telemetry.providers.apple import AppleTelemetryProvider
+    p = _make_platform(is_apple=True)
+    provider = get_telemetry_provider(p)
+    assert isinstance(provider, AppleTelemetryProvider)
+
+
+def test_factory_nvidia_returns_nvidia_provider():
+    from llmvis.telemetry.providers.factory import get_telemetry_provider
+    from llmvis.telemetry.providers.nvidia import NvidiaTelemetryProvider
+    p = _make_platform(cuda=True, cuda_name="NVIDIA RTX 4090")
+    provider = get_telemetry_provider(p)
+    assert isinstance(provider, NvidiaTelemetryProvider)
+
+
+def test_factory_cpu_returns_system_provider():
+    from llmvis.telemetry.providers.factory import get_telemetry_provider
+    from llmvis.telemetry.providers.system import SystemTelemetryProvider
+    p = _make_platform()
+    provider = get_telemetry_provider(p)
+    assert isinstance(provider, SystemTelemetryProvider)
