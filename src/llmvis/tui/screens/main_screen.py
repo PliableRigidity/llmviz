@@ -1,10 +1,9 @@
-"""Main TUI screen for LLMVis."""
+"""Main view for LLMVis (mounted as a regular widget inside the app)."""
 
 from __future__ import annotations
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
 
 from llmvis.core.state import AppState
 from llmvis.tui.widgets.header_bar import HeaderBar
@@ -15,17 +14,20 @@ from llmvis.tui.widgets.status_bar import StatusBar
 from llmvis.tui.widgets.system_panel import SystemPanel
 
 
-class MainScreen(Screen):
-    """Primary LLMVis screen."""
+class MainScreen(Vertical):
+    """Primary LLMVis layout — a Vertical container, not a Textual Screen.
 
-    CSS = """
+    Mounted directly in App.compose() so query_one(MainScreen) finds it.
+    ConceptScreen is the only true Textual Screen (pushed as a modal overlay).
+    """
+
+    DEFAULT_CSS = """
     MainScreen {
-        layout: vertical;
         background: #0d1117;
+        height: 1fr;
     }
 
     #body {
-        layout: vertical;
         height: 1fr;
         overflow-y: auto;
     }

@@ -121,7 +121,7 @@ def detect_platform() -> PlatformInfo:
         chip_model = "Intel Mac"
 
     cuda_available, cuda_device_name = _check_cuda()
-    if cuda_available and not chip_model or chip_model == "unknown":
+    if cuda_available and (not chip_model or chip_model == "unknown"):
         chip_model = cuda_device_name
 
     mlx_available = _check_mlx()

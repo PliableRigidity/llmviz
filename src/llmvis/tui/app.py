@@ -225,9 +225,7 @@ class LLMVisApp(App):
 
     def _refresh_main_screen(self) -> None:
         try:
-            screen = self.screen
-            if hasattr(screen, "refresh_state"):
-                screen.refresh_state(self.state)
+            self.query_one(MainScreen).refresh_state(self.state)
         except Exception:
             pass
 

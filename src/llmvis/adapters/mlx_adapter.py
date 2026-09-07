@@ -270,9 +270,13 @@ class MLXAdapter(BaseAdapter):
             self._event_callback(evt)
 
     def _generate_sync(self, prompt: str) -> None:
-        """Synchronous MLX generation. Runs in the thread pool."""
+        """Synchronous MLX generation. Runs in the thread pool.
+
+        Event ordering matches InstrumentedTransformersAdapter:
+          TOKEN_START → LOGITS_READY → TOKEN_SAMPLED → [forward pass]
+          → KV_CACHE_UPDATE → TOKEN_GENERATED → TOKEN_END
+        """
         import mlx.core as mx  # type: ignore[import]
-        import mlx.nn as nn  # type: ignore[import]
 
         src = "mlx_adapter"
         t_inference_start = time.perf_counter()
@@ -300,16 +304,13 @@ class MLXAdapter(BaseAdapter):
             self._emit(PrefillStartEvent(source=src, token_count=len(token_ids)))
             t_prefill = time.perf_counter()
 
-            # Convert to MLX array
             input_array = mx.array(token_ids)[None]  # [1, seq]
-
-            # Run prefill forward pass
             cache = None
             if hasattr(self._model, "make_cache"):
                 cache = self._model.make_cache()
 
             logits, cache = self._model(input_array, cache=cache)
-            # Force evaluation — MLX is lazy; timing is meaningless without eval
+            # Force evaluation — MLX is lazy; timing is meaningless without mx.eval()
             mx.eval(logits)
 
             prefill_ms = (time.perf_counter() - t_prefill) * 1000.0
@@ -337,26 +338,13 @@ class MLXAdapter(BaseAdapter):
                 t_token = time.perf_counter()
                 self._emit(TokenStartEvent(source=src, token_index=token_index))
 
-                # logits shape: [1, seq, vocab] — take last position
+                # logits[0, -1, :] = prediction for the next token
+                # For step 0 this is the prefill output; for subsequent steps it's
+                # from the previous decode forward pass.
                 logits_last = logits[0, -1, :]  # [vocab]
 
-                # Sample
+                # Sample (uses actual logits from model output)
                 next_token_id, candidates = self._sample_mlx(logits_last, mx)
-
-                # KV cache stats
-                seq_len_after, kv_bytes, k_shape, v_shape = self._kv_stats(cache, prev_seq_len + 1)
-                self._emit(KvCacheUpdateEvent(
-                    source=src,
-                    token_index=token_index,
-                    seq_len_before=prev_seq_len,
-                    seq_len_after=seq_len_after,
-                    num_layers=0,
-                    k_shape=k_shape,
-                    v_shape=v_shape,
-                    dtype="float16",
-                    measured_bytes=kv_bytes,
-                ))
-                prev_seq_len = seq_len_after
 
                 self._emit(LogitsReadyEvent(
                     source=src,
@@ -379,24 +367,43 @@ class MLXAdapter(BaseAdapter):
                     sampler=sampler_cfg,
                 ))
 
-                # Next decode step
+                # Run the decode forward pass — this updates the KV cache with
+                # the newly sampled token and produces logits for the NEXT step.
                 next_array = mx.array([[next_token_id]])
                 logits, cache = self._model(next_array, cache=cache)
-                mx.eval(logits)  # force computation before timing
+                mx.eval(logits)  # force Metal execution before timing
 
                 token_ms = (time.perf_counter() - t_token) * 1000.0
-                self._emit(TokenEndEvent(
+
+                # KV stats measured from the updated cache (post forward pass)
+                seq_len_after, kv_bytes, k_shape, v_shape = self._kv_stats(
+                    cache, prev_seq_len + 1
+                )
+                self._emit(KvCacheUpdateEvent(
                     source=src,
                     token_index=token_index,
-                    token_text=token_text,
-                    token_id=next_token_id,
-                    latency_ms=token_ms,
+                    seq_len_before=prev_seq_len,
+                    seq_len_after=seq_len_after,
+                    num_layers=0,
+                    k_shape=k_shape,
+                    v_shape=v_shape,
+                    dtype="float16",
+                    measured_bytes=kv_bytes,
                 ))
+                prev_seq_len = seq_len_after
+
                 self._emit(TokenGeneratedEvent(
                     source=src,
                     token_id=next_token_id,
                     token_text=token_text,
                     logprob=0.0,
+                    latency_ms=token_ms,
+                ))
+                self._emit(TokenEndEvent(
+                    source=src,
+                    token_index=token_index,
+                    token_text=token_text,
+                    token_id=next_token_id,
                     latency_ms=token_ms,
                 ))
 
@@ -448,23 +455,28 @@ class MLXAdapter(BaseAdapter):
                 scaled_list[idx] = val
             scaled = mx.array(scaled_list)
 
-        # Top-p (nucleus)
+        # Top-p (nucleus) — rebuild scaled logits with -inf for excluded tokens
         if self._top_p < 1.0:
-            probs_sorted_desc = mx.sort(mx.softmax(scaled, axis=-1))[::-1]
-            mx.eval(probs_sorted_desc)
+            probs_after_topk = mx.softmax(scaled, axis=-1)
+            mx.eval(probs_after_topk)
+            probs_list = probs_after_topk.tolist()
+
+            # Sort by probability descending to find nucleus threshold
+            indexed_probs = sorted(enumerate(probs_list), key=lambda x: x[1], reverse=True)
             cumulative = 0.0
-            cutoff = float("-inf")
-            for i, p in enumerate(probs_sorted_desc.tolist()):
-                cumulative += p
-                if cumulative > self._top_p:
-                    cutoff = float(probs_sorted_desc[i].item())
+            keep_ids: set[int] = set()
+            for tok_id, prob in indexed_probs:
+                keep_ids.add(tok_id)
+                cumulative += prob
+                if cumulative >= self._top_p:
                     break
-            # Mask out tokens below cutoff
-            scaled_list2 = mx.softmax(scaled, axis=-1).tolist()
-            for j in range(len(scaled_list2)):
-                if scaled_list2[j] < cutoff:
-                    # need to set logit to -inf; rebuild from filtered_probs
-                    pass
+
+            # Rebuild scaled with -inf for excluded tokens
+            scaled_list_filtered = [
+                val if i in keep_ids else float("-inf")
+                for i, val in enumerate(probs_list)
+            ]
+            scaled = mx.array(scaled_list_filtered)
 
         # Final distribution
         filtered_probs = mx.softmax(scaled, axis=-1)

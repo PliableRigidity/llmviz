@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.text import Text
 from textual.widgets import Static
 
 from llmvis.core.state import AppState, InferenceStatus, OllamaStatus
@@ -24,8 +25,8 @@ class InferencePanel(Static):
         super().__init__(**kwargs)
         self._state = state
 
-    def render(self) -> str:
-        return self._build(self._state)
+    def render(self) -> Text:
+        return Text.from_markup(self._build(self._state))
 
     def _build(self, state: AppState) -> str:
         lines = ["[bold cyan]─ INFERENCE ─────────────────────────────────────────[/bold cyan]"]

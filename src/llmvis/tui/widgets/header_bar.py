@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from rich.text import Text
 from textual.widgets import Static
 
 from llmvis.core.state import AppState, OllamaStatus
 
 
 class HeaderBar(Static):
-    """Top status bar: Ollama connection + active model summary."""
+    """Top status bar: connection + active model summary."""
 
     CSS = """
     HeaderBar {
@@ -23,10 +24,15 @@ class HeaderBar(Static):
         super().__init__(**kwargs)
         self._state = state
 
-    def render(self) -> str:
-        return self._build_text(self._state)
+    def render(self) -> Text:
+        return Text.from_markup(self._build_text(self._state))
 
     def _build_text(self, state: AppState) -> str:
+        if state.deep is not None:
+            return self._build_deep_text(state)
+        return self._build_ollama_text(state)
+
+    def _build_ollama_text(self, state: AppState) -> str:
         match state.ollama_status:
             case OllamaStatus.CONNECTED:
                 conn = "[bold green]● CONNECTED[/bold green]"
@@ -55,6 +61,34 @@ class HeaderBar(Static):
 
         line1 = f"[bold cyan]LLMVIS[/bold cyan]  Ollama {conn} {ver}{model_str}"
         line2 = f"[dim]  {state.ollama_host}[/dim]"
+        return f"{line1}\n{line2}"
+
+    def _build_deep_text(self, state: AppState) -> str:
+        match state.ollama_status:
+            case OllamaStatus.CONNECTED:
+                conn = "[bold green]● CONNECTED[/bold green]"
+            case OllamaStatus.DISCONNECTED:
+                conn = "[bold red]● DISCONNECTED[/bold red]"
+            case OllamaStatus.RECONNECTING:
+                conn = "[bold yellow]◌ RECONNECTING[/bold yellow]"
+            case _:
+                conn = "[dim]● CONNECTING...[/dim]"
+
+        d = state.deep
+        arch = d.arch if d else None
+        model_id = arch.model_id if arch and arch.model_id else ""
+        device = arch.device.upper() if arch and arch.device else ""
+
+        if device:
+            backend = f"PyTorch / {device}"
+        else:
+            backend = "Deep Instrumentation"
+
+        line1 = f"[bold cyan]LLMVIS[/bold cyan]  Deep Instrumentation {conn}"
+        if model_id:
+            line2 = f"[dim]  {backend}  │  {model_id}[/dim]"
+        else:
+            line2 = f"[dim]  {backend}[/dim]"
         return f"{line1}\n{line2}"
 
     def update_state(self, state: AppState) -> None:

@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
+import socket
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+
+@pytest.fixture
+def unused_tcp_port() -> int:
+    """Return a free TCP port on localhost."""
+    with socket.socket() as s:
+        s.bind(("", 0))
+        return s.getsockname()[1]
 
 
 FAKE_VERSION_RESPONSE = {"version": "0.33.2"}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.text import Text
 from textual.widgets import Static
 
 
@@ -17,8 +18,8 @@ class PipelinePanel(Static):
     }
     """
 
-    def render(self) -> str:
-        return (
+    def render(self) -> Text:
+        return Text.from_markup(
             "[bold cyan]─ MODEL PIPELINE ──────────────────────────────────────────────────────[/bold cyan]\n"
             "\n"
             "  [dim]Prompt[/dim] → [white]Tokenize[/white] → [white]Prefill[/white]"

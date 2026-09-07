@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.text import Text
 from textual.widgets import Static
 
 from llmvis.core.state import AppState
@@ -50,8 +51,8 @@ class SystemPanel(Static):
         super().__init__(**kwargs)
         self._state = state
 
-    def render(self) -> str:
-        return self._build(self._state)
+    def render(self) -> Text:
+        return Text.from_markup(self._build(self._state))
 
     def _build(self, state: AppState) -> str:
         lines = ["[bold cyan]─ SYSTEM ────────────────────────────[/bold cyan]"]
@@ -91,7 +92,7 @@ class SystemPanel(Static):
                 lines.append(f"  [dim]Temp  [/dim] [white]{g.temperature_c:.0f}°C[/white]")
         else:
             lines.append("  [dim]GPU    No GPU telemetry[/dim]")
-            lines.append("  [dim]       pip install llmvis[nvidia][/dim]")
+            lines.append(r"  [dim]       pip install llmvis\[nvidia][/dim]")
 
         return "\n".join(lines)
 
